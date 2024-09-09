@@ -9,12 +9,14 @@
 #pragma comment(lib, "windowsapp.lib")
 #pragma comment(lib, "shlwapi.lib")
 
+#include <d3d11_4.h>
 #include <propvarutil.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mferror.h>
 #include <mfreadwrite.h>
 
+#pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "mf.lib")
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mfuuid.lib")
@@ -28,6 +30,18 @@ int main()
 
     winrt::com_ptr<IMFTransform> Transform;
     winrt::check_hresult(CoCreateInstance(CLSID_MSH264DecoderMFT, nullptr, CLSCTX_ALL, IID_PPV_ARGS(Transform.put())));
+
+    winrt::com_ptr<ID3D11Device> Device;
+    winrt::com_ptr<ID3D11DeviceContext> DeviceContext;
+    winrt::check_hresult(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, Device.put(), nullptr, DeviceContext.put()));
+    DeviceContext.as<ID3D11Multithread>()->SetMultithreadProtected(TRUE);
+
+    UINT ResetToken;
+    winrt::com_ptr<IMFDXGIDeviceManager> DeviceManager;
+    winrt::check_hresult(MFCreateDXGIDeviceManager(&ResetToken, DeviceManager.put()));
+    winrt::check_hresult(DeviceManager->ResetDevice(Device.get(), ResetToken));
+    winrt::check_hresult(Transform->ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, reinterpret_cast<ULONG_PTR>(DeviceManager.get())));
+
     winrt::com_ptr<IMFMediaType> InputMediaType;
     winrt::check_hresult(MFCreateMediaType(InputMediaType.put()));
     winrt::check_hresult(InputMediaType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
@@ -60,33 +74,31 @@ int main()
     winrt::check_hresult(InputSample->SetSampleDuration(1));
     winrt::check_hresult(Transform->ProcessInput(0, InputSample.get(), 0));
 
+    MFT_OUTPUT_STREAM_INFO OutputStreamInfo { };
+    winrt::check_hresult(Transform->GetOutputStreamInfo(0, &OutputStreamInfo));
+    // NOTE: Once we are using MFT_MESSAGE_SET_D3D_MANAGER, decoder takes over management of output samples (texture backed)
+    WINRT_ASSERT(OutputStreamInfo.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES);
+
     winrt::check_hresult(Transform->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0));
 
-    UINT32 SampleSize = 0;
     for(; ; )
     {
-        winrt::com_ptr<IMFSample> OutputSample;
-        winrt::check_hresult(MFCreateSample(OutputSample.put()));
-        if(SampleSize)
-        {
-            winrt::com_ptr<IMFMediaBuffer> OutputMediaBuffer;
-            winrt::check_hresult(MFCreateMemoryBuffer(static_cast<DWORD>(SampleSize), OutputMediaBuffer.put()));
-            winrt::check_hresult(OutputSample->AddBuffer(OutputMediaBuffer.get()));
-        }
-        MFT_OUTPUT_DATA_BUFFER OutputDataBuffer { 0, OutputSample.get() };
+        MFT_OUTPUT_DATA_BUFFER OutputDataBuffer { };
         DWORD Status;
         const HRESULT ProcessOutputResult = Transform->ProcessOutput(0, 1, &OutputDataBuffer, &Status);
         if(ProcessOutputResult == MF_E_TRANSFORM_STREAM_CHANGE)
         {
             OutputMediaType = nullptr;
             winrt::check_hresult(Transform->GetOutputAvailableType(0, 0, OutputMediaType.put()));
-            winrt::check_hresult(OutputMediaType->GetUINT32(MF_MT_SAMPLE_SIZE, &SampleSize));
             winrt::check_hresult(Transform->SetOutputType(0, OutputMediaType.get(), 0));
-            std::cout << std::format("MediaType, SampleSize {:d}", SampleSize) << std::endl;
+            std::cout << "MediaType" << std::endl;
             continue;
         }
         if(FAILED(ProcessOutputResult))
             break;
+        WINRT_ASSERT(OutputDataBuffer.pSample);
+        winrt::com_ptr<IMFSample> OutputSample;
+        OutputSample.attach(OutputDataBuffer.pSample);
         std::ostringstream Stream;
         LONGLONG SampleTime;
         winrt::check_hresult(OutputSample->GetSampleTime(&SampleTime));
@@ -94,6 +106,18 @@ int main()
         UINT32 FrameCorruption;
         if(SUCCEEDED(OutputSample->GetUINT32(MFSampleExtension_FrameCorruption, &FrameCorruption)))
             Stream << std::format(", FrameCorruption {}", FrameCorruption);
+        {
+            winrt::com_ptr<IMFMediaBuffer> MediaBuffer;
+            winrt::check_hresult(OutputSample->ConvertToContiguousBuffer(MediaBuffer.put()));
+            auto const DxgiBuffer = MediaBuffer.as<IMFDXGIBuffer>();
+            winrt::com_ptr<ID3D11Texture2D> Texture;
+            winrt::check_hresult(DxgiBuffer->GetResource(IID_PPV_ARGS(Texture.put())));
+            CD3D11_TEXTURE2D_DESC TextureDesc;
+            Texture->GetDesc(&TextureDesc);
+            UINT SubresourceIndex;
+            winrt::check_hresult(DxgiBuffer->GetSubresourceIndex(&SubresourceIndex));
+            Stream << std::format(", Texture {} x {}, format {}, subresource {}", TextureDesc.Width, TextureDesc.Height, static_cast<unsigned int>(TextureDesc.Format), SubresourceIndex);
+        }
         std::cout << Stream.str() << std::endl;
     }
 
