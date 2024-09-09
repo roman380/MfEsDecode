@@ -9,3 +9,7 @@ The project comes with a sample file derived from [MSDN Forums question](https:/
 Build the project and run from debugger. The project will pick up [test.mp4.h264](test.mp4.h264) file and process it decoding video frames. The will be `MFSampleExtension_FrameCorruption` information included in the output.
 
 Sample project output is [included](test.mp4.h264.txt).
+
+## Miscellaneous
+
+- See #1 to find out how hardware assisted decoding is different; the branch uses Direct3D 11 device and DXGI device manager with the decoder and obtains decoded frames in Direct3D 11 textures
