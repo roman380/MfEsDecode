@@ -1,4 +1,7 @@
 #include <iostream>
+#include <string>
+#include <format>
+#include <sstream>
 
 #include <unknwn.h>
 #include <winrt\base.h>
@@ -59,7 +62,6 @@ int main()
 
     winrt::check_hresult(Transform->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0));
 
-    WCHAR Text[1024];
     UINT32 SampleSize = 0;
     for(; ; )
     {
@@ -80,20 +82,21 @@ int main()
             winrt::check_hresult(Transform->GetOutputAvailableType(0, 0, OutputMediaType.put()));
             winrt::check_hresult(OutputMediaType->GetUINT32(MF_MT_SAMPLE_SIZE, &SampleSize));
             winrt::check_hresult(Transform->SetOutputType(0, OutputMediaType.get(), 0));
-            swprintf_s(Text, L"MediaType, SampleSize %u", SampleSize);
-            std::wcout << Text << std::endl;
+            std::cout << std::format("MediaType, SampleSize {:d}", SampleSize) << std::endl;
             continue;
         }
         if(FAILED(ProcessOutputResult))
             break;
+        std::ostringstream Stream;
         LONGLONG SampleTime;
         winrt::check_hresult(OutputSample->GetSampleTime(&SampleTime));
-        swprintf_s(Text, L"Sample, SampleTime %I64u", SampleTime);
+        Stream << std::format("Sample, SampleTime {:.3f}", SampleTime / 1E7);
         UINT32 FrameCorruption;
         if(SUCCEEDED(OutputSample->GetUINT32(MFSampleExtension_FrameCorruption, &FrameCorruption)))
-            swprintf_s(Text + wcslen(Text), std::size(Text) - wcslen(Text), L", FrameCorruption %d", FrameCorruption);
-        std::wcout << Text << std::endl;
+            Stream << std::format(", FrameCorruption {}", FrameCorruption);
+        std::cout << Stream.str() << std::endl;
     }
 
     // TODO: Clean things up
+    return 0;
 }
